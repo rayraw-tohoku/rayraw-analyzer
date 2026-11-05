@@ -47,7 +47,9 @@ struct Event
   std::vector<Double_t>              integral_ped;
   std::vector<std::vector<Double_t>> leading;  // [seg][depth]
   std::vector<std::vector<Double_t>> trailing; // [seg][depth]
+  std::vector<std::vector<Double_t>> leading_corr; // [seg][depth] PHC corrected
   std::vector<Double_t>              tdc_first;
+  std::vector<Double_t>              tdc_first_corr; // PHC corrected
   std::vector<Double_t>              dE;
   std::vector<Double_t>              dE_q;
   void clear();
@@ -65,7 +67,9 @@ Event::clear()
   integral_ped.clear();
   leading.clear();
   trailing.clear();
+  leading_corr.clear();
   tdc_first.clear();
+  tdc_first_corr.clear();
   dE.clear();
   dE_q.clear();
 }
@@ -96,6 +100,8 @@ ProcessingNormal()
 {
   static const auto MinRange    = gUser.GetParameter("RangeRAYRAW", 0);
   static const auto MaxRange    = gUser.GetParameter("RangeRAYRAW", 1);
+  static const auto CorrectionTdcMin = gUser.GetParameter("TdcRAYRAW", 0);
+  static const auto CorrectionTdcMax = gUser.GetParameter("TdcRAYRAW", 1);
   static const Int_t PedInitial = 500;
   // static const Double_t V_per_ch = 3.3/1024.; // [V]
   // static const Double_t T_per_ch = 13.33; // [ns]
@@ -108,6 +114,8 @@ ProcessingNormal()
 
   HF1(1, 0);
 
+  const auto& phcMan = HodoPHCMan::GetInstance();
+
     {
     const auto& cont = rawData.GetHodoRawHC("RAYRAW");
     Int_t nh = cont.size();
@@ -116,6 +124,7 @@ ProcessingNormal()
     event.waveform.resize(nh);
     event.leading.resize(nh);
     event.trailing.resize(nh);
+    event.leading_corr.resize(nh);
 
     for( int i=0; i<nh; ++i ){
 
@@ -158,38 +167,6 @@ ProcessingNormal()
       Int_t hid_dE           = RAYRAWHid + (seg+1)*1000 + 10; // maxADC
       Int_t hid_dE_q         = RAYRAWHid + (seg+1)*1000 + 11; // Integral
 
-      // TDC Leading
-      for (const auto& tdc_l : hit->GetArrayTdcLeading() ) {
-	HF1(hid_tdc_l, tdc_l);
-	event.leading[seg].push_back(tdc_l);
-	if(tdc_l > tdc_first)
-	  tdc_first = tdc_l;
-
-	// if(tdc_l != 0 ){
-	//   if(min_l < tdc_l && tdc_l < max_l){
-	//     leading_hit_in += 1;
-	//   }else{
-	//     leading_hit_out += 1;
-	//   }
-	// }
-      }
-      HF1(hid_tdc_first, tdc_first);
-      event.tdc_first.push_back(tdc_first);
-
-      // TDC Trailing
-      for (const auto& tdc_t : hit->GetArrayTdcTrailing() ) {
-	HF1(hid_tdc_t, tdc_t);
-	event.trailing[seg].push_back(tdc_t);
-
-	// if(tdc_t != 0 ){
-	//   if(min_t < tdc_t && tdc_t < max_t){
-	//     trailing_hit_in += 1;
-	//   }else{
-	//     trailing_hit_out += 1;
-	//   }
-	// }
-      }
-
       // ADC block
       for(const auto& fadc : hit->GetArrayAdc()){
 	HF2(hid_wf, nsample, fadc);
@@ -224,6 +201,61 @@ ProcessingNormal()
       HF1(hid_dE_q, dE_q);
       event.dE_q.push_back(dE_q);
 
+      // TDC Leading (after ADC block: PHC correction uses integral)
+      for (const auto& tdc_l : hit->GetArrayTdcLeading() ) {
+	HF1(hid_tdc_l, tdc_l);
+	event.leading[seg].push_back(tdc_l);
+	if(tdc_l > tdc_first)
+	  tdc_first = tdc_l;
+
+	// PHC correction
+	Double_t corrected_tdc = tdc_l;
+	if(CorrectionTdcMin <= tdc_l && tdc_l <= CorrectionTdcMax){
+	  Double_t temp_corrected_tdc;
+	  if(phcMan.DoCorrection(cid, plid, seg, 0, tdc_l, integral,
+				 temp_corrected_tdc))
+	    corrected_tdc = temp_corrected_tdc;
+	}
+	event.leading_corr[seg].push_back(corrected_tdc);
+
+	// if(tdc_l != 0 ){
+	//   if(min_l < tdc_l && tdc_l < max_l){
+	//     leading_hit_in += 1;
+	//   }else{
+	//     leading_hit_out += 1;
+	//   }
+	// }
+      }
+      HF1(hid_tdc_first, tdc_first);
+      event.tdc_first.push_back(tdc_first);
+
+      // PHC-corrected first leading
+      Double_t tdc_first_corr = qnan;
+      if(tdc_first != -10){
+	tdc_first_corr = tdc_first;
+	if(CorrectionTdcMin <= tdc_first && tdc_first <= CorrectionTdcMax){
+	  Double_t corrected_val;
+	  if(phcMan.DoCorrection(cid, plid, seg, 0, tdc_first, integral,
+				 corrected_val))
+	    tdc_first_corr = corrected_val;
+	}
+      }
+      event.tdc_first_corr.push_back(tdc_first_corr);
+
+      // TDC Trailing
+      for (const auto& tdc_t : hit->GetArrayTdcTrailing() ) {
+	HF1(hid_tdc_t, tdc_t);
+	event.trailing[seg].push_back(tdc_t);
+
+	// if(tdc_t != 0 ){
+	//   if(min_t < tdc_t && tdc_t < max_t){
+	//     trailing_hit_in += 1;
+	//   }else{
+	//     trailing_hit_out += 1;
+	//   }
+	// }
+      }
+
     } // for nh
 
     return true;
@@ -250,8 +282,8 @@ ConfMan::InitializeHistograms()
   const Int_t    NbinIntegral   = (Int_t)(MaxIntegral - MinIntegral);
 
   const Double_t MinTDC         = 0.;
-  const Double_t MaxTDC         = 4096.;
-  const Int_t    NbinTDC        = (Int_t)(MaxTDC - MinTDC);
+  const Double_t MaxTDC         = 3000000.;
+  const Int_t    NbinTDC        = 30000;
 
   const Double_t MindE         = -0.5;
   const Double_t MaxdE         = 29.5;
@@ -294,7 +326,9 @@ ConfMan::InitializeHistograms()
   tree->Branch("integral_ped",   &event.integral_ped);
   tree->Branch("leading",        &event.leading);
   tree->Branch("trailing",       &event.trailing);
+  tree->Branch("leading_corr",   &event.leading_corr);
   tree->Branch("tdc_first",      &event.tdc_first);
+  tree->Branch("tdc_first_corr", &event.tdc_first_corr);
   tree->Branch("dE(MaxADC)",     &event.dE);
   tree->Branch("dE(Integral)",   &event.dE_q);
 
