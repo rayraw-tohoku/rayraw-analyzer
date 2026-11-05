@@ -32,6 +32,7 @@
 #include "MsTParamMan.hh"
 #include "UnpackerManager.hh"
 #include "UserParamMan.hh"
+#include "TemplateFitMan.hh"
 
 namespace
 {
@@ -164,6 +165,7 @@ ConfMan::Finalize()
 TString
 ConfMan::FilePath(const TString& src) const
 {
+  if(src.BeginsWith("/")) return src;
   std::ifstream tmp(src);
   if(tmp.good()) return src;
   else           return sConfDir + "/" + src;
